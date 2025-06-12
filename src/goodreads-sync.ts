@@ -129,5 +129,21 @@ async function main() {
     process.exit(1);
   }
 }
-
+// TODO:
+// 1. If the book isn't found, create a new file based on the book template. The file name should be the book title (sans subtitle and series information).
+// 2. Update the frontmatter of the book with the details from the Goodreads export
+	// parsedTitle['subtitle'] = subtitle
+  // parsedTitle['seriesName'] = series-name:
+  // parsedTitle['seriesNumber'] = series-number:
+  // book['Author'] = author
+  // book['Additional Authors'] = appended to author
+  // book['My Rating'] = rating
+  // book['Number of Pages'] = length
+  // book['Original Publication Year'] = year
+  // book['Date Read'] = read-last
+  // book['Exclusive Shelf'] = shelf
+  // book['Read Count'] = read-count
+  // book['My Review'],
+  // url = `https://www.goodreads.com/book/show/${book['Book Id']}`;
+// 3. Save
 main(); 
