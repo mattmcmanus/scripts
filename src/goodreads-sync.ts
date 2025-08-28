@@ -1,130 +1,59 @@
 import { readFileSync, readdirSync, writeFileSync } from "fs";
-import { join } from "path";
-import { parse, stringify } from "@std/csv";
-import remarkFrontmatter from 'remark-frontmatter'
-import remarkParse from 'remark-parse'
-import remarkStringify from 'remark-stringify'
-import remarkGfm from 'remark-gfm'
-import { unified } from 'unified'
-import { visit } from 'unist-util-visit'
-import yaml from 'js-yaml'
-import type { Node, Parent } from 'unist'
-import type { Heading, Text, Paragraph } from 'mdast'
-import { mergeWith } from 'es-toolkit'
+import remarkFrontmatter from "remark-frontmatter";
+import remarkParse from "remark-parse";
+import remarkStringify from "remark-stringify";
+import remarkWikiLink from "remark-wiki-link";
+import remarkHtml from "remark-html";
+import { unified } from "unified";
+import { visit } from "unist-util-visit";
+import yaml from "js-yaml";
+import type { Node, Parent } from "unist";
+import type { Heading, Text, Paragraph, Root } from "mdast";
+import { parseArgs } from "node:util";
+import { parseTitle, updateFrontmatter } from "./goodreads-sync.utils";
+import type { GoodreadsBook } from "./goodreads-sync.types";
+import { GOODREADS_HEADERS } from "./goodreads-sync.types";
+import { openCSV } from "./utils/csv";
+import { fromHtml } from "hast-util-from-html";
+import { toMdast } from "hast-util-to-mdast";
 
 // Parse command line arguments
-const args = process.argv.slice(2);
-// const debug = args.includes("--debug");
-const debug = true;
-const limitIndex = args.findIndex(arg => arg === "--limit");
-// const limit: number | null = limitIndex !== -1 ? parseInt(args[limitIndex + 1], 10) : null;
-const limit = 3;
+const {
+  values: { debug, limit, shelf },
+} = parseArgs({
+  options: {
+    debug: {
+      type: "boolean",
+      short: "d",
+      // default: true,
+    },
+    limit: {
+      type: "string",
+      short: "l",
+      // default: '3'
+    },
+    shelf: {
+      type: "string",
+      short: "s",
+      // default: 'read'
+    },
+  },
+});
 
-if (limitIndex !== -1 && (limit && (isNaN(limit) || limit < 1))) {
-  console.error("Error: --limit must be followed by a positive number");
+// Convert limit to number if provided
+const parsedLimit = limit ? parseInt(limit, 10) : null;
+
+if (parsedLimit && (isNaN(parsedLimit) || parsedLimit < 1)) {
+  console.error("Error: --limit must be a positive number");
   process.exit(1);
-}
-
-async function openCSV<RowType>(
-  path: string,
-  headers: readonly string[]
-): Promise<{ rows: RowType[]; headers: (keyof RowType)[] }> {
-  const content = await Bun.file(path).text();
-  const rows = parse(content.trim(), {
-    skipFirstRow: true,
-    columns: headers,
-  }) as RowType[];
-  return { rows, headers: headers as (keyof RowType)[] };
 }
 
 // Configuration
 const config = {
-  vaultPath: "/Users/matt/Notes//040-Sources/Books/", // Replace with your vault path
+  vaultPath: "/Users/matt/Notes/040-Sources/Books/", // Replace with your vault path
   goodreadsCsvPath: "goodreads_library_export.csv", // Replace with your CSV path
   template: "/Users/matt/Notes/999-Assets/templates/book-template.md",
 };
-
-const GOODREADS_HEADERS = [
-  "Book Id",
-  "Title",
-  "Author",
-  "Author l-f",
-  "Additional Authors",
-  "ISBN",
-  "ISBN13",
-  "My Rating",
-  "Average Rating",
-  "Publisher",
-  "Binding",
-  "Number of Pages",
-  "Year Published",
-  "Original Publication Year",
-  "Date Read",
-  "Date Added",
-  "Bookshelves",
-  "Bookshelves with positions",
-  "Exclusive Shelf",
-  "My Review",
-  "Spoiler",
-  "Private Notes",
-  "Read Count",
-  "Owned Copies",
-] as const;
-
-type GoodreadExportHeaders = (typeof GOODREADS_HEADERS)[number];
-
-interface GoodreadsBook extends Record<GoodreadExportHeaders, unknown> {
-  "Book Id": string;
-  Title: string;
-  Author: string;
-  "Author l-f": string;
-  "Additional Authors": string;
-  ISBN: string;
-  ISBN13: string;
-  "My Rating": string;
-  "Average Rating": string;
-  Publisher: string;
-  Binding: string;
-  "Number of Pages": string;
-  "Year Published": string;
-  "Original Publication Year": string;
-  "Date Read": string;
-  "Date Added": string;
-  Bookshelves: string;
-  "Bookshelves with positions": string;
-  "Exclusive Shelf": string;
-  "My Review": string;
-  Spoiler: string;
-  "Private Notes": string;
-  "Read Count": string;
-  "Owned Copies": string;
-}
-
-interface ParsedTitle {
-  title: string;
-  subtitle?: string;
-  seriesName?: string;
-  seriesNumber?: string;
-}
-
-function parseTitle(fullTitle: string): ParsedTitle {
-  // Match pattern: "Title: Subtitle (Series Name, #N)" or "Title: Subtitle (Series #N)"
-  const regex = /^(.*?)(?::\s*(.*?))?\s*(?:\(([^,]+)(?:,\s*#?(\d+))?\))?$/;
-  const match = fullTitle.match(regex);
-
-  if (!match) {
-    return { title: fullTitle.trim() };
-  }
-
-  const [, title, subtitle, seriesName, seriesNumber] = match;
-
-  return {
-    title: title.trim(),
-    subtitle: subtitle?.trim(),
-    seriesName: seriesName?.trim(),
-    seriesNumber: seriesNumber?.trim(),
-  };
-}
 
 function findBookFilePath(
   title: string,
@@ -140,15 +69,8 @@ function findBookFilePath(
 }
 
 function getBookTemplate(title: string): string {
-  const parsedTitle = parseTitle(title);
-  const limitedTitle = parsedTitle.subtitle
-    ? `${parsedTitle.title}: ${parsedTitle.subtitle}`
-    : parsedTitle.title;
   try {
-    return readFileSync(config.template, "utf-8").replace(
-      "{{title}}",
-      limitedTitle
-    );
+    return readFileSync(config.template, "utf-8").replace("{{title}}", title);
   } catch (error) {
     console.error("Error loading book template:", error);
     process.exit(1);
@@ -158,49 +80,23 @@ function getBookTemplate(title: string): string {
 function createFrontmatterPlugin(book: GoodreadsBook) {
   return () => (tree: Parent) => {
     // Find and update the frontmatter node
-    visit(tree, 'yaml', (node: any) => {
-      // Prepare the new frontmatter data
-      const parsedTitle = parseTitle(book.Title);
-      const frontmatter = {
-        aliases: [],
-        tags: ["books"],
-        categories: ["[[Books]]"],
-        url: `https://www.goodreads.com/book/show/${book["Book Id"]}`,
-        title: parsedTitle.title,
-        subtitle: parsedTitle.subtitle,
-        "series-name": parsedTitle.seriesName,
-        "series-number": parsedTitle.seriesNumber,
-        author: book.Author,
-        shelf: book["Exclusive Shelf"],
-        rating: book["My Rating"],
-        length: book["Number of Pages"],
-        year: book["Original Publication Year"],
-        "read-last": book["Date Read"],
-        "read-count": book["Read Count"],
-        topics: []
-      };
-
-      // Add additional authors if present
-      if (book["Additional Authors"]) {
-        frontmatter.author += `, ${book["Additional Authors"]}`;
-      }
-
+    visit(tree, "yaml", (node: any) => {
       try {
         // Parse existing frontmatter if it exists
-        const existingData = yaml.load(node.value) || {};
-        // Deep merge with existing frontmatter, preferring existing values unless they're empty
-        const mergedData = mergeWith(existingData, frontmatter, (targetValue, sourceValue) => {
-          if (sourceValue === null || sourceValue === undefined || sourceValue === '' || 
-              (Array.isArray(sourceValue) && sourceValue.length === 0)) {
-            return targetValue;
-          }
-        });
+        const existingData = structuredClone(yaml.load(node.value) || {});
+        // Prepare the new frontmatter data
+        const mergedData = updateFrontmatter(book, existingData);
         // Convert back to YAML
-        node.value = yaml.dump(mergedData);
+        const dump = yaml.dump(mergedData, {
+          quotingType: '\"',
+          sortKeys: true,
+          styles: {
+            '!!null': 'empty'
+          },
+        });
+        node.value = dump;
       } catch (err) {
         console.error(err);
-        // If parsing fails, just use the new frontmatter
-        node.value = yaml.dump(frontmatter);
       }
     });
   };
@@ -212,46 +108,99 @@ function createReviewPlugin(book: GoodreadsBook) {
     if (book["My Review"]?.trim()) {
       let foundH1 = false;
       let insertAfter: Heading | null = null;
+      let hasReviewSection = false;
 
-      // Find the first h1 heading
-      visit(tree, 'heading', (node: Heading) => {
+      // Check for existing review section and find first h1
+      visit(tree, "heading", (node: Heading) => {
+        if (node.depth === 2 && node.children[0]?.type === 'text' && 
+            node.children[0].value.toLowerCase().includes('review')) {
+          hasReviewSection = true;
+        }
         if (!foundH1 && node.depth === 1) {
           foundH1 = true;
           insertAfter = node;
         }
       });
 
+      // Skip if review section already exists
+      if (hasReviewSection) {
+        return;
+      }
+
       if (insertAfter) {
+        // Convert HTML to HAST then to MDAST
+        const hast = fromHtml(book["My Review"].trim());
+        const mdast = toMdast(hast) as Root;
+        
         // Create the review section nodes
-        const reviewNodes: Node[] = [
+        const sectionNodes: Node[] = [
           {
-            type: 'heading',
+            type: "heading",
             depth: 2,
-            children: [{ type: 'text', value: 'Review' } as Text]
+            children: [{ type: "text", value: "My Review #reviewed" } as Text],
           } as Heading,
-          {
-            type: 'paragraph',
-            children: [{ type: 'text', value: book["My Review"].trim() } as Text]
-          } as Paragraph
+          ...mdast.children
         ];
 
         // Insert the review section after the h1
         const index = tree.children.indexOf(insertAfter);
-        tree.children.splice(index + 1, 0, ...reviewNodes);
+        tree.children.splice(index + 1, 0, ...sectionNodes);
       }
     }
   };
 }
 
-async function processMarkdown(content: string, book: GoodreadsBook): Promise<string> {
+function createCoverPlugin() {
+  return () => (tree: Parent) => {
+    let coverUrl: string | undefined;
+    let nodesToRemove: Node[] = [];
+
+    // Find the cover line and store its URL
+    visit(tree, 'paragraph', (node: Paragraph, index: number, parent: Parent) => {
+      const firstChild = node.children[0];
+      if (firstChild?.type === 'text' && firstChild.value.startsWith('cover::')) {
+        coverUrl = firstChild.value.replace('cover::', '').trim();
+        nodesToRemove.push(node);
+        // Also remove the next node if it's a blank line
+        const nextNode = parent.children[index + 1];
+        if (nextNode?.type === 'paragraph' && 
+            'children' in nextNode && 
+            (nextNode as Paragraph).children.length === 0) {
+          nodesToRemove.push(nextNode);
+        }
+      }
+    });
+
+    // Remove the cover line and blank line
+    tree.children = tree.children.filter(node => !nodesToRemove.includes(node));
+
+    // Add cover to frontmatter if found
+    if (coverUrl) {
+      visit(tree, 'yaml', (node: any) => {
+        try {
+          const existingData = yaml.load(node.value) || {};
+          node.value = yaml.dump({ ...existingData, cover: coverUrl });
+        } catch (err) {
+          console.error('Error updating frontmatter with cover:', err);
+        }
+      });
+    }
+  };
+}
+
+async function processMarkdown(
+  content: string,
+  book: GoodreadsBook
+): Promise<string> {
   // Create a processor that can parse and stringify markdown
   const processor = unified()
     .use(remarkParse)
-    .use(remarkFrontmatter, ['yaml'])
-    .use(remarkGfm)
+    .use(remarkFrontmatter, ["yaml"])
+    .use(remarkWikiLink)
+    .use(createCoverPlugin())
     .use(createFrontmatterPlugin(book))
     .use(createReviewPlugin(book))
-    .use(remarkStringify);
+    .use(remarkStringify, { rule: '-', bullet: '-' });
 
   // Process the content
   const result = await processor.process(content);
@@ -259,6 +208,7 @@ async function processMarkdown(content: string, book: GoodreadsBook): Promise<st
 }
 
 async function main() {
+  let count = 0;
   try {
     const records = await openCSV<GoodreadsBook>(
       config.goodreadsCsvPath,
@@ -267,9 +217,17 @@ async function main() {
 
     // Process each book
     for (const [index, book] of records.rows.entries()) {
+      // Filter by shelf if specified
+      if (
+        shelf &&
+        book["Exclusive Shelf"].toLowerCase() !== shelf.toLowerCase()
+      ) {
+        continue;
+      }
+      count++;
       // Check limit if set
-      if (limit !== null && index >= limit) {
-        console.log(`Reached limit of ${limit} books`);
+      if (parsedLimit !== null && count > parsedLimit) {
+        console.log(`Reached limit of ${parsedLimit} books`);
         break;
       }
 
@@ -279,9 +237,10 @@ async function main() {
       let rawContent;
 
       if (bookPath) {
+        bookPath = `${config.vaultPath}/${bookPath}`;
         rawContent = readFileSync(bookPath, "utf-8");
       } else {
-        bookPath = `${config.vaultPath}/${title.title}.md`;
+        bookPath = `${config.vaultPath}${title.title}.md`;
         rawContent = getBookTemplate(book.Title);
       }
 
