@@ -38,6 +38,18 @@ interface UpdateDNSOptions {
   forceVpn?: boolean;
 }
 
+/**
+ * Check if VPN is connected
+ * 
+ * How did I get utun10?
+ * Make sure VPN is disconnected then run:
+ * ifconfig -a | pbcopy
+ * 
+ * Reconnect Connect VPN
+ * diff =(pbpaste) =(ifconfig -a)
+ * 
+ * The diff will show what network interface was added
+ */
 async function isConnectedToVPN(): Promise<boolean> {
   try {
     const { stdout } = await execAsync('ifconfig');
