@@ -6,8 +6,8 @@
  * Updates a Cloudflare DNS record with your current public IP address.
  * Only updates if the IP has changed from the current DNS record.
  * 
- * Usage: bun run ddns-update.ts --zone-id ZONE_ID --record-id RECORD_ID [--domain DOMAIN] [--debug]
- *        bun run ddns-update.ts -z ZONE_ID -r RECORD_ID [-d DOMAIN] [--debug]
+ * Usage: bun run ddns-update.ts --zone-id ZONE_ID --record-id RECORD_ID [--domain DOMAIN] [--debug] [--force-vpn]
+ *        bun run ddns-update.ts -z ZONE_ID -r RECORD_ID [-d DOMAIN] [--debug] [--force-vpn]
  * 
  * Required Environment Variables:
  *   CF_API_TOKEN - Your Cloudflare API token
@@ -17,19 +17,35 @@
  *   -r, --record-id  - DNS Record ID to update
  *   -d, --domain     - Domain name (optional, uses existing if not provided)
  *       --debug      - Show current status without making changes
+ *       --force-vpn  - Bypass VPN detection and update anyway
  *   -h, --help       - Show help message
  * 
  * Example: bun run ddns-update.ts -z abc123 -r xyz789 -d home.example.com --debug
  */
 
 import { parseArgs } from 'node:util';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 import Cloudflare from 'cloudflare';
+
+const execAsync = promisify(exec);
 
 interface UpdateDNSOptions {
   zoneId: string;
   recordId: string;
   domain?: string;
   debug?: boolean;
+  forceVpn?: boolean;
+}
+
+async function isConnectedToVPN(): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync('ifconfig');
+    return stdout.includes('utun10:');
+  } catch (error) {
+    console.warn('Warning: Could not check VPN status:', error);
+    return false;
+  }
 }
 
 async function getCurrentPublicIP(): Promise<string> {
@@ -37,7 +53,19 @@ async function getCurrentPublicIP(): Promise<string> {
   return response.text();
 }
 
-async function updateDNSRecord({ zoneId, recordId, domain, debug }: UpdateDNSOptions) {
+async function updateDNSRecord({ zoneId, recordId, domain, debug, forceVpn }: UpdateDNSOptions) {
+  // Check for VPN connection first (unless forced to bypass)
+  if (!forceVpn) {
+    const vpnConnected = await isConnectedToVPN();
+    if (vpnConnected) {
+      console.log('🔒 VPN connection detected. Skipping DNS update to avoid using VPN IP address.');
+      console.log('💡 Disconnect from VPN and run again, or use --force-vpn to override.');
+      process.exit(0);
+    }
+  } else {
+    // console.log('⚠️  VPN check bypassed with --force-vpn flag');
+  }
+
   // Get API token from environment variable
   const apiToken = process.env.CF_API_TOKEN;
   if (!apiToken) {
@@ -96,7 +124,7 @@ async function updateDNSRecord({ zoneId, recordId, domain, debug }: UpdateDNSOpt
 }
 
 // Parse command line arguments using node:util parseArgs
-function getArgs(): { zoneId: string; recordId: string; domain?: string; debug?: boolean } {
+function getArgs(): { zoneId: string; recordId: string; domain?: string; debug?: boolean; forceVpn?: boolean } {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
     options: {
@@ -115,6 +143,9 @@ function getArgs(): { zoneId: string; recordId: string; domain?: string; debug?:
       'debug': {
         type: 'boolean',
       },
+      'force-vpn': {
+        type: 'boolean',
+      },
       'help': {
         type: 'boolean',
         short: 'h',
@@ -125,13 +156,14 @@ function getArgs(): { zoneId: string; recordId: string; domain?: string; debug?:
 
   // Handle help option
   if (values.help) {
-    console.log('Usage: bun run ddns-update.ts --zone-id ZONE_ID --record-id RECORD_ID [--domain DOMAIN] [--debug]');
+    console.log('Usage: bun run ddns-update.ts --zone-id ZONE_ID --record-id RECORD_ID [--domain DOMAIN] [--debug] [--force-vpn]');
     console.log('Environment variable required: CF_API_TOKEN');
     console.log('\nOptions:');
     console.log('  -z, --zone-id     Cloudflare Zone ID (required)');
     console.log('  -r, --record-id   DNS Record ID to update (required)');
     console.log('  -d, --domain      Domain name (optional)');
     console.log('      --debug       Show current IP status without making changes');
+    console.log('      --force-vpn   Bypass VPN detection and update anyway');
     console.log('  -h, --help        Show this help message');
     process.exit(0);
   }
@@ -148,11 +180,12 @@ function getArgs(): { zoneId: string; recordId: string; domain?: string; debug?:
     recordId: values['record-id']!,
     domain: values.domain,
     debug: values.debug,
+    forceVpn: values['force-vpn'],
   };
 }
 
 // Run the script
 if (import.meta.main) {
-  const { zoneId, recordId, domain, debug } = getArgs();
-  await updateDNSRecord({ zoneId, recordId, domain, debug });
+  const { zoneId, recordId, domain, debug, forceVpn } = getArgs();
+  await updateDNSRecord({ zoneId, recordId, domain, debug, forceVpn });
 }
